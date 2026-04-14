@@ -1,96 +1,64 @@
-# 🏗 Scaffold-ETH 2
+# BurnJackpot
 
-<h4 align="center">
-  <a href="https://docs.scaffoldeth.io">Documentation</a> |
-  <a href="https://scaffoldeth.io">Website</a>
-</h4>
+A on-chain lottery on Base where players burn CLAWD tokens to enter. The winner takes 80% of the pot — the remaining 20% is permanently burned. Rounds run forever.
 
-🧪 An open-source, up-to-date toolkit for building decentralized applications (dapps) on the Ethereum blockchain. It's designed to make it easier for developers to create and deploy smart contracts and build user interfaces that interact with those contracts.
+## How It Works
 
-> [!NOTE]
-> 🤖 Scaffold-ETH 2 is AI-ready! It has everything agents need to build on Ethereum. Check `.agents/`, `.claude/`, `.opencode` or `.cursor/` for more info.
+1. **Owner opens a round** by calling `setCommit(bytes32 hash)` with `keccak256(abi.encodePacked(secret))`.
+2. **Players buy tickets** by approving CLAWD and calling `buyTickets(uint256 n)`. Each ticket costs 1,000,000 CLAWD.
+3. **Round ends** when the countdown reaches zero.
+4. **Anyone reveals** the winner by calling `draw(bytes32 secret)` after the round ends. The contract uses commit-reveal randomness to pick a winner.
+5. **Winner receives 80%** of the pot in CLAWD. **20% is sent to the zero address** (permanently burned).
 
-⚙️ Built using NextJS, RainbowKit, Foundry, Wagmi, Viem, and Typescript.
+## Deployed Contracts
 
-- ✅ **Contract Hot Reload**: Your frontend auto-adapts to your smart contract as you edit it.
-- 🪝 **[Custom hooks](https://docs.scaffoldeth.io/hooks/)**: Collection of React hooks wrapper around [wagmi](https://wagmi.sh/) to simplify interactions with smart contracts with typescript autocompletion.
-- 🧱 [**Components**](https://docs.scaffoldeth.io/components/): Collection of common web3 components to quickly build your frontend.
-- 🔥 **Burner Wallet & Local Faucet**: Quickly test your application with a burner wallet and local faucet.
-- 🔐 **Integration with Wallet Providers**: Connect to different wallet providers and interact with the Ethereum network.
+| Contract | Network | Address |
+|----------|---------|---------|
+| BurnJackpot | Base (8453) | `0x75501F36CEC6e757608863a84034E759d0cc319D` |
+| CLAWD Token | Base (8453) | `0x9f86dB9fc6f7c9408e8Fda3Ff8ce4e78ac7a6b07` |
 
-![Debug Contracts tab](https://github.com/scaffold-eth/scaffold-eth-2/assets/55535804/b237af0c-5027-4849-a5c1-2e31495cccb1)
+Both contracts are verified on [Basescan](https://basescan.org).
 
-## Requirements
+## Owner Setup
 
-Before you begin, you need to install the following tools:
+The owner controls round lifecycle. Before players can buy tickets, the owner must open a round:
 
-- [Node (>= v20.18.3)](https://nodejs.org/en/download/)
-- Yarn ([v1](https://classic.yarnpkg.com/en/docs/install/) or [v2+](https://yarnpkg.com/getting-started/install))
-- [Git](https://git-scm.com/downloads)
+```bash
+# Generate a secret
+SECRET=$(openssl rand -hex 32)
 
-## Quickstart
+# Compute the commit hash
+COMMIT=$(cast keccak "0x$SECRET")
 
-To get started with Scaffold-ETH 2, follow the steps below:
-
-1. Install dependencies if it was skipped in CLI:
-
+# Call setCommit on the BurnJackpot contract
+cast send 0x75501F36CEC6e757608863a84034E759d0cc319D \
+  "setCommit(bytes32)" $COMMIT \
+  --rpc-url $ALCHEMY_RPC_URL \
+  --private-key $PRIVATE_KEY
 ```
-cd my-dapp-example
+
+After the round timer expires, reveal the secret to draw the winner:
+
+```bash
+cast send 0x75501F36CEC6e757608863a84034E759d0cc319D \
+  "draw(bytes32)" "0x$SECRET" \
+  --rpc-url $ALCHEMY_RPC_URL \
+  --private-key $PRIVATE_KEY
+```
+
+**Keep the secret safe.** If the secret is lost after tickets are purchased, players can claim refunds via `claimRefund()` after 7 days past the round end time.
+
+## Local Development
+
+```bash
 yarn install
+yarn chain        # Start local Anvil node
+yarn deploy       # Deploy contracts locally
+yarn start        # Start frontend at http://localhost:3000
 ```
 
-2. Run a local network in the first terminal:
+## Frontend
 
-```
-yarn chain
-```
+Built with [Scaffold-ETH 2](https://scaffoldeth.io) — Next.js, RainbowKit, Wagmi, Viem, and Tailwind CSS + DaisyUI.
 
-This command starts a local Ethereum network using Foundry. The network runs on your local machine and can be used for testing and development. You can customize the network configuration in `packages/foundry/foundry.toml`.
-
-3. On a second terminal, deploy the test contract:
-
-```
-yarn deploy
-```
-
-This command deploys a test smart contract to the local network. The contract is located in `packages/foundry/contracts` and can be modified to suit your needs. The `yarn deploy` command uses the deploy script located in `packages/foundry/script` to deploy the contract to the network. You can also customize the deploy script.
-
-4. On a third terminal, start your NextJS app:
-
-```
-yarn start
-```
-
-Visit your app on: `http://localhost:3000`. You can interact with your smart contract using the `Debug Contracts` page. You can tweak the app config in `packages/nextjs/scaffold.config.ts`.
-
-Run smart contract test with `yarn foundry:test`
-
-- Edit your smart contracts in `packages/foundry/contracts`
-- Edit your frontend homepage at `packages/nextjs/app/page.tsx`. For guidance on [routing](https://nextjs.org/docs/app/building-your-application/routing/defining-routes) and configuring [pages/layouts](https://nextjs.org/docs/app/building-your-application/routing/pages-and-layouts) checkout the Next.js documentation.
-- Edit your deployment scripts in `packages/foundry/script`
-
-
-## Documentation
-
-Visit our [docs](https://docs.scaffoldeth.io) to learn how to start building with Scaffold-ETH 2.
-
-To know more about its features, check out our [website](https://scaffoldeth.io).
-
-## Known Issues
-
-The following items were identified during audit and are accepted as-is for this release:
-
-- **Unbounded tickets array** — `buyTickets` pushes one slot per ticket; `draw` deletes the full array. At very high participation this raises gas costs on `draw()`. Practical mitigation: the 1M CLAWD ticket price provides an economic bound.
-- **Frontend uses MockClawd on all chains** — Balance, allowance, and approve calls target the `MockClawd` contract. On Base mainnet this contract does not exist; the UI will show incorrect balance and the approve button will not function. For production use, the frontend must be updated to target the real CLAWD token via `externalContracts.ts` and hide the faucet button on non-local chains.
-- **`draw()` uses `blockhash(block.number - 1)`** — Deterministic for the reveal submitter within the 256-block window; does not add meaningful entropy beyond the secret. See commit-reveal limitations in AUDIT_REPORT.md.
-- **Lost-secret stuck state** — If the owner loses the secret after tickets are purchased, the round cannot be drawn normally. Ticket buyers may recover funds via `claimRefund()` after `roundEnd + REFUND_GRACE_PERIOD` (7 days).
-- **Past-rounds links hardcoded to basescan** — Transaction links in the Past Rounds table always point to `basescan.org`. On local Anvil or testnets these links will 404.
-- **`roundEnd` not reset to zero on rollover** — After a no-tickets draw, `commitHash` is cleared but `roundEnd` retains its prior value, causing a cosmetic discrepancy in the UI countdown.
-- **`Ownable2Step` with direct initial ownership** — Ownership is granted to the client address at deploy time via `Ownable(_owner)`. The deployer never holds ownership. Future handoffs correctly require `acceptOwnership()`.
-- **`BURN_PERCENT` and `TICKET_PRICE` are immutable constants** — Changing lottery economics requires a contract redeployment.
-
-## Contributing to Scaffold-ETH 2
-
-We welcome contributions to Scaffold-ETH 2!
-
-Please see [CONTRIBUTING.MD](https://github.com/scaffold-eth/scaffold-eth-2/blob/main/CONTRIBUTING.md) for more information and guidelines for contributing to Scaffold-ETH 2.
+The frontend is deployed as a static export to IPFS via [bgipfs](https://bgipfs.com).

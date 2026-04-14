@@ -4,15 +4,22 @@ import { useEffect, useMemo, useState } from "react";
 import { Address } from "@scaffold-ui/components";
 import type { NextPage } from "next";
 import { hardhat } from "viem/chains";
-import { useAccount } from "wagmi";
+import { useAccount, useChainId, useSwitchChain } from "wagmi";
 import { FireIcon } from "@heroicons/react/24/solid";
-import { useScaffoldEventHistory, useScaffoldReadContract, useScaffoldWriteContract } from "~~/hooks/scaffold-eth";
+import {
+  useDeployedContractInfo,
+  useScaffoldEventHistory,
+  useScaffoldReadContract,
+  useScaffoldWriteContract,
+} from "~~/hooks/scaffold-eth";
 import { useTargetNetwork } from "~~/hooks/scaffold-eth/useTargetNetwork";
+import { getParsedError, notification } from "~~/utils/scaffold-eth";
 
 const TICKET_PRICE_TOKENS = 1_000_000n;
 const CLAWD_DECIMALS = 18;
 const TICKET_PRICE_WEI = TICKET_PRICE_TOKENS * 10n ** BigInt(CLAWD_DECIMALS);
 const ZERO_HASH = "0x0000000000000000000000000000000000000000000000000000000000000000";
+const BASE_CHAIN_ID = 8453;
 
 function formatClawd(wei?: bigint): string {
   if (wei === undefined) return "—";
@@ -30,19 +37,36 @@ function formatCountdown(endTs?: bigint, now?: number): string {
   return `${h.toString().padStart(2, "0")}h ${m.toString().padStart(2, "0")}m ${s.toString().padStart(2, "0")}s`;
 }
 
+// Mobile deep-link helper: fires a wallet deep-link if the user is not already in
+// an in-app browser and has an active WalletConnect / Rainbow session.
+function openWallet() {
+  if (typeof window === "undefined") return;
+  // Already inside an in-app browser — no deep-link needed
+  if (window.ethereum && !(window.ethereum as any).isMetaMask) return;
+  const connId = (window as any).__wagmiConnector?.id ?? "";
+  if (connId.includes("walletConnect") || connId === "rainbow") {
+    window.location.href = "rainbow://";
+  }
+}
+
 const Home: NextPage = () => {
   const { address: user } = useAccount();
   const { targetNetwork } = useTargetNetwork();
   const isLocalNetwork = targetNetwork.id === hardhat.id;
+  const chainId = useChainId();
+  const { switchChain } = useSwitchChain();
   const [now, setNow] = useState(Date.now());
   const [ticketCountInput, setTicketCountInput] = useState("1");
   const [isApproving, setIsApproving] = useState(false);
+  const [approveCooldown, setApproveCooldown] = useState(false);
   const [isMinting, setIsMinting] = useState(false);
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
+
+  const { data: deployedContractData } = useDeployedContractInfo({ contractName: "BurnJackpot" });
 
   const { data: roundInfo } = useScaffoldReadContract({
     contractName: "BurnJackpot",
@@ -67,7 +91,7 @@ const Home: NextPage = () => {
     functionName: "balanceOf",
     args: [user],
   });
-  const { data: allowance } = useScaffoldReadContract({
+  const { data: allowance, refetch: refetchAllowance } = useScaffoldReadContract({
     contractName: "Clawd",
     functionName: "allowance",
     args: [user, jackpotClawdAddress],
@@ -139,6 +163,14 @@ const Home: NextPage = () => {
         functionName: "approve",
         args: [jackpotClawdAddress as `0x${string}`, requiredAllowance],
       });
+      setTimeout(openWallet, 2000);
+      setApproveCooldown(true);
+      setTimeout(() => {
+        setApproveCooldown(false);
+        refetchAllowance?.();
+      }, 4000);
+    } catch (e) {
+      notification.error(getParsedError(e));
     } finally {
       setIsApproving(false);
     }
@@ -146,9 +178,17 @@ const Home: NextPage = () => {
 
   const handleBuy = async () => {
     if (!canBuy) return;
-    await writeJackpot({ functionName: "buyTickets", args: [parsedN] });
-    setTicketCountInput("1");
+    try {
+      await writeJackpot({ functionName: "buyTickets", args: [parsedN] });
+      setTimeout(openWallet, 2000);
+      setTicketCountInput("1");
+    } catch (e) {
+      notification.error(getParsedError(e));
+    }
   };
+
+  // Determine if the user is on the wrong network (only when wallet is connected)
+  const isWrongNetwork = !!user && chainId !== BASE_CHAIN_ID;
 
   return (
     <div className="flex flex-col items-center px-4 pt-8 pb-24 gap-8 w-full max-w-5xl mx-auto">
@@ -161,6 +201,12 @@ const Home: NextPage = () => {
         <p className="text-base opacity-70 m-0">
           Burn CLAWD to enter the pot. Winner takes 80%. 20% is permanently destroyed. Rounds run forever.
         </p>
+        {deployedContractData?.address && (
+          <div className="flex items-center justify-center gap-2 mt-2 text-sm opacity-60">
+            <span>Contract:</span>
+            <Address address={deployedContractData.address} />
+          </div>
+        )}
       </div>
 
       <div className="card w-full bg-gradient-to-br from-orange-500/20 via-red-500/10 to-base-100 border border-orange-500/30 shadow-xl">
@@ -169,6 +215,7 @@ const Home: NextPage = () => {
           <div className="text-6xl font-extrabold text-orange-400">
             {formatClawd(pot)} <span className="text-2xl align-middle opacity-70">CLAWD</span>
           </div>
+          <span className="text-xs opacity-50">CLAWD is a community token — no USD oracle</span>
           <div className="text-sm opacity-70 mt-2">Winner receives</div>
           <div className="text-2xl font-bold">
             {formatClawd((pot * 80n) / 100n)} CLAWD
@@ -191,6 +238,7 @@ const Home: NextPage = () => {
           <h2 className="card-title">Buy Tickets</h2>
           <div className="text-sm opacity-70">
             Price: <span className="font-bold">{TICKET_PRICE_TOKENS.toLocaleString()} CLAWD</span> per ticket
+            <span className="ml-2 text-xs opacity-60">(CLAWD is a community token — no USD oracle)</span>
           </div>
 
           <div className="flex flex-wrap gap-3 items-end">
@@ -215,10 +263,14 @@ const Home: NextPage = () => {
               <div className="opacity-60">Your balance: {formatClawd(clawdBalance as bigint | undefined)} CLAWD</div>
             </div>
 
-            {needsApproval ? (
+            {isWrongNetwork ? (
+              <button onClick={() => switchChain({ chainId: BASE_CHAIN_ID })} className="btn btn-secondary">
+                Switch to Base
+              </button>
+            ) : needsApproval ? (
               <button
                 onClick={handleApprove}
-                disabled={isApproving || !user || parsedN === 0n}
+                disabled={isApproving || approveCooldown || !user || parsedN === 0n}
                 className="btn btn-warning"
               >
                 {isApproving ? <span className="loading loading-spinner loading-sm" /> : null}
@@ -329,7 +381,6 @@ const Home: NextPage = () => {
                           <td className="text-right opacity-70">{formatClawd(burnAmount)} CLAWD</td>
                           <td>
                             {txHash ? (
-                              // Known issue: links unconditionally to basescan — on non-Base chains these 404; use targetNetwork.blockExplorers for the base URL.
                               <a
                                 href={`https://basescan.org/tx/${txHash}`}
                                 target="_blank"
