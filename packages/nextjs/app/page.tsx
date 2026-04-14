@@ -3,9 +3,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { Address } from "@scaffold-ui/components";
 import type { NextPage } from "next";
+import { keccak256 } from "viem";
 import { hardhat } from "viem/chains";
 import { useAccount, useChainId, useSwitchChain } from "wagmi";
-import { FireIcon } from "@heroicons/react/24/solid";
+import { FireIcon, LockClosedIcon } from "@heroicons/react/24/solid";
 import {
   useDeployedContractInfo,
   useScaffoldEventHistory,
@@ -14,6 +15,15 @@ import {
 } from "~~/hooks/scaffold-eth";
 import { useTargetNetwork } from "~~/hooks/scaffold-eth/useTargetNetwork";
 import { getParsedError, notification } from "~~/utils/scaffold-eth";
+
+function generateSecret(): `0x${string}` {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return ("0x" +
+    Array.from(bytes)
+      .map(b => b.toString(16).padStart(2, "0"))
+      .join("")) as `0x${string}`;
+}
 
 const TICKET_PRICE_TOKENS = 1_000_000n;
 const CLAWD_DECIMALS = 18;
@@ -60,6 +70,8 @@ const Home: NextPage = () => {
   const [isApproving, setIsApproving] = useState(false);
   const [approveCooldown, setApproveCooldown] = useState(false);
   const [isMinting, setIsMinting] = useState(false);
+  const [ownerSecret, setOwnerSecret] = useState<`0x${string}` | "">("");
+  const [revealSecret, setRevealSecret] = useState<string>("");
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
@@ -104,8 +116,16 @@ const Home: NextPage = () => {
     watch: true,
   });
 
+  const { data: contractOwner } = useScaffoldReadContract({
+    contractName: "BurnJackpot",
+    functionName: "owner",
+  });
+
   const { writeContractAsync: writeClawd } = useScaffoldWriteContract({ contractName: "Clawd" });
   const { writeContractAsync: writeJackpot, isMining } = useScaffoldWriteContract({
+    contractName: "BurnJackpot",
+  });
+  const { writeContractAsync: writeJackpotOwner, isMining: isOwnerMining } = useScaffoldWriteContract({
     contractName: "BurnJackpot",
   });
 
@@ -133,6 +153,10 @@ const Home: NextPage = () => {
   const canBuy = roundOpen && !expired && parsedN > 0n;
   const notEnoughBalance =
     !!user && requiredAllowance > 0n && ((clawdBalance as bigint | undefined) ?? 0n) < requiredAllowance;
+
+  const isOwner = !!user && !!contractOwner && user.toLowerCase() === (contractOwner as string).toLowerCase();
+  const pendingCommitHash = ownerSecret ? keccak256(ownerSecret as `0x${string}`) : undefined;
+  const roundEnded = roundEnd !== 0n && Number(roundEnd) * 1000 <= now;
 
   const ticketCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -182,6 +206,26 @@ const Home: NextPage = () => {
       await writeJackpot({ functionName: "buyTickets", args: [parsedN] });
       setTimeout(openWallet, 2000);
       setTicketCountInput("1");
+    } catch (e) {
+      notification.error(getParsedError(e));
+    }
+  };
+
+  const handleSetCommit = async () => {
+    if (!pendingCommitHash) return;
+    try {
+      await writeJackpotOwner({ functionName: "setCommit", args: [pendingCommitHash as `0x${string}`] });
+      setTimeout(openWallet, 2000);
+    } catch (e) {
+      notification.error(getParsedError(e));
+    }
+  };
+
+  const handleDraw = async () => {
+    if (!revealSecret) return;
+    try {
+      await writeJackpotOwner({ functionName: "draw", args: [revealSecret as `0x${string}`] });
+      setTimeout(openWallet, 2000);
     } catch (e) {
       notification.error(getParsedError(e));
     }
@@ -405,6 +449,95 @@ const Home: NextPage = () => {
         Commit-reveal randomness: owner commits keccak256(secret) before each round; after the timer expires anyone
         reveals the secret to draw the winner. Prevents post-hoc owner manipulation and miner front-running.
       </div>
+
+      {isOwner && (
+        <div className="card w-full border border-warning bg-base-200 shadow-lg">
+          <div className="card-body">
+            <h2 className="card-title gap-2">
+              <LockClosedIcon className="h-5 w-5 text-warning" />
+              Owner Controls
+            </h2>
+
+            {/* Panel: Open Next Round */}
+            {!roundOpen && (
+              <div className="flex flex-col gap-3">
+                <div className="text-sm font-semibold opacity-80">Open Next Round</div>
+                <div className="flex flex-wrap gap-2 items-center">
+                  <button
+                    className="btn btn-sm btn-outline"
+                    onClick={() => {
+                      const s = generateSecret();
+                      setOwnerSecret(s);
+                      setRevealSecret(s);
+                    }}
+                  >
+                    Generate Random Secret
+                  </button>
+                </div>
+                {ownerSecret && (
+                  <div className="flex flex-col gap-1 text-xs font-mono break-all">
+                    <div>
+                      <span className="opacity-60">Secret: </span>
+                      <span className="text-success">{ownerSecret}</span>
+                    </div>
+                    <div>
+                      <span className="opacity-60">keccak256(secret): </span>
+                      <span>{pendingCommitHash}</span>
+                    </div>
+                  </div>
+                )}
+                {ownerSecret && (
+                  <div className="alert alert-warning py-2 text-sm">
+                    ⚠️ Save your secret — you will need it to reveal the winner. It cannot be recovered.
+                  </div>
+                )}
+                <button
+                  className="btn btn-warning btn-sm w-fit"
+                  disabled={!ownerSecret || isOwnerMining}
+                  onClick={handleSetCommit}
+                >
+                  {isOwnerMining ? <span className="loading loading-spinner loading-xs" /> : null}
+                  Open Round (Set Commit)
+                </button>
+              </div>
+            )}
+
+            {/* Panel: Round In Progress */}
+            {roundOpen && !roundEnded && (
+              <div className="text-sm opacity-70">
+                Round is live — wait for the timer to expire, then reveal the secret to draw.
+              </div>
+            )}
+
+            {/* Panel: Reveal & Draw */}
+            {roundOpen && roundEnded && (
+              <div className="flex flex-col gap-3">
+                <div className="text-sm font-semibold opacity-80">Reveal &amp; Draw Winner</div>
+                <label className="form-control w-full max-w-lg">
+                  <div className="label">
+                    <span className="label-text text-xs">Secret (bytes32 hex)</span>
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="0x..."
+                    value={revealSecret}
+                    onChange={e => setRevealSecret(e.target.value)}
+                    className="input input-bordered input-sm font-mono text-xs w-full"
+                  />
+                </label>
+                <button
+                  className="btn btn-warning btn-sm w-fit"
+                  disabled={!revealSecret || isOwnerMining}
+                  onClick={handleDraw}
+                >
+                  {isOwnerMining ? <span className="loading loading-spinner loading-xs" /> : null}
+                  Draw Winner
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
