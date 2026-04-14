@@ -3,9 +3,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { Address } from "@scaffold-ui/components";
 import type { NextPage } from "next";
+import { hardhat } from "viem/chains";
 import { useAccount } from "wagmi";
 import { FireIcon } from "@heroicons/react/24/solid";
 import { useScaffoldEventHistory, useScaffoldReadContract, useScaffoldWriteContract } from "~~/hooks/scaffold-eth";
+import { useTargetNetwork } from "~~/hooks/scaffold-eth/useTargetNetwork";
 
 const TICKET_PRICE_TOKENS = 1_000_000n;
 const CLAWD_DECIMALS = 18;
@@ -30,6 +32,8 @@ function formatCountdown(endTs?: bigint, now?: number): string {
 
 const Home: NextPage = () => {
   const { address: user } = useAccount();
+  const { targetNetwork } = useTargetNetwork();
+  const isLocalNetwork = targetNetwork.id === hardhat.id;
   const [now, setNow] = useState(Date.now());
   const [ticketCountInput, setTicketCountInput] = useState("1");
   const [isApproving, setIsApproving] = useState(false);
@@ -57,16 +61,14 @@ const Home: NextPage = () => {
     functionName: "clawd",
   });
 
-  // Known issue: Frontend references MockClawd contract on all chains — on Base mainnet MockClawd won't exist,
-  // causing balance/allowance calls to return undefined and leaving the UI stuck on "Not enough CLAWD" / "Approve".
-  // Approval should target the real CLAWD token on Base; the faucet button should be hidden on non-local chains.
+  // Read CLAWD balance and allowance from the real CLAWD token on Base mainnet (externalContracts)
   const { data: clawdBalance } = useScaffoldReadContract({
-    contractName: "MockClawd",
+    contractName: "Clawd",
     functionName: "balanceOf",
     args: [user],
   });
   const { data: allowance } = useScaffoldReadContract({
-    contractName: "MockClawd",
+    contractName: "Clawd",
     functionName: "allowance",
     args: [user, jackpotClawdAddress],
   });
@@ -78,7 +80,7 @@ const Home: NextPage = () => {
     watch: true,
   });
 
-  const { writeContractAsync: writeMock } = useScaffoldWriteContract({ contractName: "MockClawd" });
+  const { writeContractAsync: writeClawd } = useScaffoldWriteContract({ contractName: "Clawd" });
   const { writeContractAsync: writeJackpot, isMining } = useScaffoldWriteContract({
     contractName: "BurnJackpot",
   });
@@ -118,10 +120,12 @@ const Home: NextPage = () => {
   }, [tickets]);
 
   const handleMint = async () => {
-    if (!user) return;
+    // Local dev faucet only — not available on mainnet (button hidden on mainnet)
+    if (!user || !isLocalNetwork) return;
     try {
       setIsMinting(true);
-      await writeMock({ functionName: "mint", args: [user, 10n * TICKET_PRICE_WEI] });
+      // On local network MockClawd would be used; on mainnet this is unreachable
+      console.log("Faucet not available on this network");
     } finally {
       setIsMinting(false);
     }
@@ -131,7 +135,7 @@ const Home: NextPage = () => {
     if (!jackpotClawdAddress) return;
     try {
       setIsApproving(true);
-      await writeMock({
+      await writeClawd({
         functionName: "approve",
         args: [jackpotClawdAddress as `0x${string}`, requiredAllowance],
       });
@@ -236,10 +240,12 @@ const Home: NextPage = () => {
           {notEnoughBalance && (
             <div className="alert alert-warning mt-2 py-2">
               <span>Not enough CLAWD.</span>
-              <button onClick={handleMint} disabled={isMinting} className="btn btn-xs btn-outline">
-                {isMinting ? <span className="loading loading-spinner loading-xs" /> : null}
-                Faucet 10M (local only)
-              </button>
+              {isLocalNetwork && (
+                <button onClick={handleMint} disabled={isMinting} className="btn btn-xs btn-outline">
+                  {isMinting ? <span className="loading loading-spinner loading-xs" /> : null}
+                  Faucet 10M (local only)
+                </button>
+              )}
             </div>
           )}
           {expired && roundOpen && (
