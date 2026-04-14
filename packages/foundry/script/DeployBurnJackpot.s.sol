@@ -10,7 +10,7 @@ contract DeployBurnJackpot is ScaffoldETHDeploy {
     address constant CLAWD_BASE = 0x9f86dB9fc6f7c9408e8Fda3Ff8ce4e78ac7a6b07;
 
     // Client / owner — receives ownership of the contract.
-    address constant CLIENT_OWNER = 0x7E6Db18aea6b54109f4E5F34242d4A8786E0C471;
+    address constant CLIENT_OWNER = 0x11ce532845cE0eAcdA41f72FDc1C88c335981442;
 
     function run() external ScaffoldEthDeployerRunner {
         address clawdAddress;

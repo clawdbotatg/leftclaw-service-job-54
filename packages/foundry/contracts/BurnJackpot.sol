@@ -28,6 +28,8 @@ contract BurnJackpot is Ownable2Step, ReentrancyGuard {
     uint256 public pot;
     address[] public tickets;
     bytes32 public commitHash;
+    /// @notice Block hash captured at setCommit time — used as entropy in draw() to prevent owner grinding the reveal block.
+    bytes32 public commitBlockHash;
 
     /// @notice Tracks the refundable amount per buyer for the current round.
     mapping(address => uint256) public refundableAmount;
@@ -69,6 +71,7 @@ contract BurnJackpot is Ownable2Step, ReentrancyGuard {
         if (hash == bytes32(0)) revert InvalidCommit();
         if (commitHash != bytes32(0)) revert CommitAlreadySet();
         commitHash = hash;
+        commitBlockHash = blockhash(block.number - 1);
         roundEnd = block.timestamp + ROUND_DURATION;
         emit CommitSet(roundId, roundEnd);
     }
@@ -101,8 +104,8 @@ contract BurnJackpot is Ownable2Step, ReentrancyGuard {
     }
 
     /// @notice After the round ends, anyone can reveal the secret to draw a winner.
-    /// @notice Known issue: draw() uses blockhash(block.number - 1) — deterministic for the reveal submitter
-    ///         within the 256-block window. See the HIGH commit-reveal finding for the full concern.
+    /// @notice Entropy is locked at setCommit time via commitBlockHash — the owner cannot grind the reveal block
+    ///         to bias the winner. The block hash is captured before any tickets are sold.
     function draw(bytes32 secret) external nonReentrant {
         if (commitHash == bytes32(0)) revert NoCommit();
         if (block.timestamp < roundEnd) revert RoundNotOver();
@@ -117,6 +120,7 @@ contract BurnJackpot is Ownable2Step, ReentrancyGuard {
             ///         retains its prior value, causing the UI's "Waiting for owner" branch to show with a live
             ///         countdown. Harmless, slightly confusing.
             commitHash = bytes32(0);
+            commitBlockHash = bytes32(0);
             roundEnd = block.timestamp + ROUND_DURATION;
             emit RoundRolledOver(currentRound, roundEnd);
             return;
@@ -126,7 +130,7 @@ contract BurnJackpot is Ownable2Step, ReentrancyGuard {
         uint256 burnAmount = (currentPot * BURN_PERCENT) / 100;
         uint256 winnerAmount = currentPot - burnAmount;
 
-        uint256 rand = uint256(keccak256(abi.encodePacked(secret, blockhash(block.number - 1))));
+        uint256 rand = uint256(keccak256(abi.encodePacked(secret, commitBlockHash)));
         address winner = tickets[rand % ticketCount];
 
         // Reset state before external transfers.

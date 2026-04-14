@@ -7,7 +7,7 @@ import { GenericContractsDeclaration } from "~~/utils/scaffold-eth/contract";
 const deployedContracts = {
   8453: {
     BurnJackpot: {
-      address: "0x75501f36cec6e757608863a84034e759d0cc319d",
+      address: "0x833a34b124a7a53683f5d927d581d36e17227836",
       abi: [
         {
           type: "constructor",
@@ -126,6 +126,19 @@ const deployedContracts = {
               name: "",
               type: "address",
               internalType: "contract IERC20",
+            },
+          ],
+          stateMutability: "view",
+        },
+        {
+          type: "function",
+          name: "commitBlockHash",
+          inputs: [],
+          outputs: [
+            {
+              name: "",
+              type: "bytes32",
+              internalType: "bytes32",
             },
           ],
           stateMutability: "view",
@@ -605,7 +618,7 @@ const deployedContracts = {
         },
       ],
       inheritedFunctions: {},
-      deployedOnBlock: 44705784,
+      deployedOnBlock: 44708203,
     },
   },
 } as const;
