@@ -136,6 +136,16 @@ const Home: NextPage = () => {
     bigint,
   ];
 
+  // Restore saved secret from localStorage when roundId is known
+  useEffect(() => {
+    if (typeof window === "undefined" || roundId === 0n) return;
+    const saved = localStorage.getItem(`burnjackpot-secret-${roundId}`);
+    if (saved) {
+      setOwnerSecret(saved as `0x${string}`);
+      setRevealSecret(saved);
+    }
+  }, [roundId]);
+
   const parsedN = useMemo(() => {
     try {
       const n = BigInt(ticketCountInput || "0");
@@ -226,6 +236,10 @@ const Home: NextPage = () => {
     try {
       await writeJackpotOwner({ functionName: "draw", args: [revealSecret as `0x${string}`] });
       setTimeout(openWallet, 2000);
+      // Clear the secret now that the round is drawn
+      if (roundId !== 0n) localStorage.removeItem(`burnjackpot-secret-${roundId}`);
+      setOwnerSecret("");
+      setRevealSecret("");
     } catch (e) {
       notification.error(getParsedError(e));
     }
@@ -468,6 +482,7 @@ const Home: NextPage = () => {
                     onClick={() => {
                       const s = generateSecret();
                       setOwnerSecret(s);
+                      if (roundId !== 0n) localStorage.setItem(`burnjackpot-secret-${roundId}`, s);
                       setRevealSecret(s);
                     }}
                   >
