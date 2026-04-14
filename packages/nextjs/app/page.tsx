@@ -92,10 +92,8 @@ const Home: NextPage = () => {
     contractName: "BurnJackpot",
     functionName: "commitHash",
   });
-  const { data: jackpotClawdAddress } = useScaffoldReadContract({
-    contractName: "BurnJackpot",
-    functionName: "clawd",
-  });
+  // BurnJackpot contract address — this is the spender for CLAWD approve
+  const burnJackpotAddress = deployedContractData?.address;
 
   // Read CLAWD balance and allowance from the real CLAWD token on Base mainnet (externalContracts)
   const { data: clawdBalance } = useScaffoldReadContract({
@@ -106,7 +104,7 @@ const Home: NextPage = () => {
   const { data: allowance, refetch: refetchAllowance } = useScaffoldReadContract({
     contractName: "Clawd",
     functionName: "allowance",
-    args: [user, jackpotClawdAddress],
+    args: [user, burnJackpotAddress],
   });
 
   const { data: pastRounds } = useScaffoldEventHistory({
@@ -190,12 +188,12 @@ const Home: NextPage = () => {
   };
 
   const handleApprove = async () => {
-    if (!jackpotClawdAddress) return;
+    if (!burnJackpotAddress) return;
     try {
       setIsApproving(true);
       await writeClawd({
         functionName: "approve",
-        args: [jackpotClawdAddress as `0x${string}`, requiredAllowance],
+        args: [burnJackpotAddress as `0x${string}`, requiredAllowance],
       });
       setTimeout(openWallet, 2000);
       setApproveCooldown(true);
