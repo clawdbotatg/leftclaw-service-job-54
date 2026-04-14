@@ -57,6 +57,9 @@ const Home: NextPage = () => {
     functionName: "clawd",
   });
 
+  // Known issue: Frontend references MockClawd contract on all chains — on Base mainnet MockClawd won't exist,
+  // causing balance/allowance calls to return undefined and leaving the UI stuck on "Not enough CLAWD" / "Approve".
+  // Approval should target the real CLAWD token on Base; the faucet button should be hidden on non-local chains.
   const { data: clawdBalance } = useScaffoldReadContract({
     contractName: "MockClawd",
     functionName: "balanceOf",
@@ -320,6 +323,7 @@ const Home: NextPage = () => {
                           <td className="text-right opacity-70">{formatClawd(burnAmount)} CLAWD</td>
                           <td>
                             {txHash ? (
+                              // Known issue: links unconditionally to basescan — on non-Base chains these 404; use targetNetwork.blockExplorers for the base URL.
                               <a
                                 href={`https://basescan.org/tx/${txHash}`}
                                 target="_blank"

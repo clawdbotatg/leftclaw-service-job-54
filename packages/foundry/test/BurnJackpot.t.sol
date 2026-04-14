@@ -3,9 +3,8 @@ pragma solidity ^0.8.20;
 
 import { Test } from "forge-std/Test.sol";
 import { BurnJackpot } from "../contracts/BurnJackpot.sol";
-import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-/// @dev Minimal ERC20 that permits transfer to address(0) so the "burn" path works in tests.
+/// @dev Minimal ERC20 for tests. Burns go to the dead address (0xdead), not address(0).
 contract MockClawd {
     string public name = "CLAWD";
     string public symbol = "CLAWD";
@@ -49,7 +48,6 @@ contract MockClawd {
         unchecked {
             balanceOf[from] -= amount;
         }
-        // allow to == address(0) so the burn path works
         balanceOf[to] += amount;
         emit Transfer(from, to, amount);
     }
@@ -63,6 +61,7 @@ contract BurnJackpotTest is Test {
     address alice = address(0xA11CE);
     address bob = address(0xB0B);
     address carol = address(0xCA401);
+    address constant DEAD = 0x000000000000000000000000000000000000dEaD;
 
     uint256 constant TICKET_PRICE = 1_000_000 * 1e18;
 
@@ -98,6 +97,7 @@ contract BurnJackpotTest is Test {
         assertEq(jackpot.BURN_PERCENT(), 20);
         assertEq(jackpot.roundId(), 1);
         assertEq(address(jackpot.clawd()), address(clawd));
+        assertEq(jackpot.BURN_ADDRESS(), DEAD);
     }
 
     function test_setCommit_onlyOwner() public {
@@ -131,6 +131,16 @@ contract BurnJackpotTest is Test {
         jackpot.buyTickets(1);
     }
 
+    function test_buyTickets_ownerBlocked() public {
+        _openRound(commit);
+        clawd.mint(owner, 10 * TICKET_PRICE);
+        vm.prank(owner);
+        clawd.approve(address(jackpot), type(uint256).max);
+        vm.prank(owner);
+        vm.expectRevert(BurnJackpot.OwnerCannotBuyTickets.selector);
+        jackpot.buyTickets(1);
+    }
+
     function test_buyTickets_movesTokensAndPushes() public {
         _openRound(commit);
         vm.prank(alice);
@@ -144,6 +154,14 @@ contract BurnJackpotTest is Test {
         assertEq(t[0], alice);
         assertEq(t[1], alice);
         assertEq(t[2], alice);
+    }
+
+    function test_buyTickets_tracksRefundable() public {
+        _openRound(commit);
+        vm.prank(alice);
+        jackpot.buyTickets(2);
+        assertEq(jackpot.refundableAmount(alice), 2 * TICKET_PRICE);
+        assertEq(jackpot.lastBoughtRoundId(alice), 1);
     }
 
     function test_buyTickets_revertAfterExpiry() public {
@@ -193,14 +211,15 @@ contract BurnJackpotTest is Test {
 
         uint256 aliceBefore = clawd.balanceOf(alice);
         uint256 bobBefore = clawd.balanceOf(bob);
-        uint256 burnBefore = clawd.balanceOf(address(0));
+        uint256 deadBefore = clawd.balanceOf(DEAD);
 
         jackpot.draw(secret);
 
         uint256 expectedBurn = (potBefore * 20) / 100;
         uint256 expectedWinner = potBefore - expectedBurn;
 
-        assertEq(clawd.balanceOf(address(0)) - burnBefore, expectedBurn);
+        // Burns go to the dead address, not address(0).
+        assertEq(clawd.balanceOf(DEAD) - deadBefore, expectedBurn);
 
         uint256 aliceDelta = clawd.balanceOf(alice) - aliceBefore;
         uint256 bobDelta = clawd.balanceOf(bob) - bobBefore;
@@ -239,6 +258,73 @@ contract BurnJackpotTest is Test {
 
     function test_ownerIsClient() public view {
         assertEq(jackpot.owner(), owner);
+    }
+
+    function test_claimRefund_stuckRound() public {
+        _openRound(commit);
+        vm.prank(alice);
+        jackpot.buyTickets(2);
+        vm.prank(bob);
+        jackpot.buyTickets(1);
+
+        uint256 alicePaid = 2 * TICKET_PRICE;
+        uint256 bobPaid = 1 * TICKET_PRICE;
+
+        // Advance past roundEnd + grace period (owner never reveals).
+        vm.warp(block.timestamp + 24 hours + jackpot.REFUND_GRACE_PERIOD() + 1);
+
+        uint256 aliceBefore = clawd.balanceOf(alice);
+        uint256 bobBefore = clawd.balanceOf(bob);
+
+        vm.prank(alice);
+        jackpot.claimRefund();
+        vm.prank(bob);
+        jackpot.claimRefund();
+
+        assertEq(clawd.balanceOf(alice) - aliceBefore, alicePaid);
+        assertEq(clawd.balanceOf(bob) - bobBefore, bobPaid);
+        assertEq(jackpot.pot(), 0);
+    }
+
+    function test_claimRefund_notAvailableBeforeGrace() public {
+        _openRound(commit);
+        vm.prank(alice);
+        jackpot.buyTickets(1);
+
+        // Only past roundEnd, not past grace period yet.
+        vm.warp(block.timestamp + 24 hours + 1);
+
+        vm.prank(alice);
+        vm.expectRevert(BurnJackpot.RefundNotAvailable.selector);
+        jackpot.claimRefund();
+    }
+
+    function test_claimRefund_notAvailableAfterDraw() public {
+        _openRound(commit);
+        vm.prank(alice);
+        jackpot.buyTickets(1);
+
+        vm.warp(block.timestamp + 24 hours + 1);
+        vm.roll(block.number + 1);
+        jackpot.draw(secret); // draw succeeds, roundId advances
+
+        // commitHash is cleared; claimRefund should revert with RefundNotAvailable.
+        vm.warp(block.timestamp + jackpot.REFUND_GRACE_PERIOD() + 1);
+        vm.prank(alice);
+        vm.expectRevert(BurnJackpot.RefundNotAvailable.selector);
+        jackpot.claimRefund();
+    }
+
+    function test_claimRefund_nothingToRefundIfNotBuyer() public {
+        _openRound(commit);
+        vm.prank(alice);
+        jackpot.buyTickets(1);
+
+        vm.warp(block.timestamp + 24 hours + jackpot.REFUND_GRACE_PERIOD() + 1);
+
+        vm.prank(carol); // carol never bought
+        vm.expectRevert(BurnJackpot.NothingToRefund.selector);
+        jackpot.claimRefund();
     }
 
     function test_fullRoundLifecycle() public {

@@ -76,6 +76,19 @@ Visit our [docs](https://docs.scaffoldeth.io) to learn how to start building wit
 
 To know more about its features, check out our [website](https://scaffoldeth.io).
 
+## Known Issues
+
+The following items were identified during audit and are accepted as-is for this release:
+
+- **Unbounded tickets array** — `buyTickets` pushes one slot per ticket; `draw` deletes the full array. At very high participation this raises gas costs on `draw()`. Practical mitigation: the 1M CLAWD ticket price provides an economic bound.
+- **Frontend uses MockClawd on all chains** — Balance, allowance, and approve calls target the `MockClawd` contract. On Base mainnet this contract does not exist; the UI will show incorrect balance and the approve button will not function. For production use, the frontend must be updated to target the real CLAWD token via `externalContracts.ts` and hide the faucet button on non-local chains.
+- **`draw()` uses `blockhash(block.number - 1)`** — Deterministic for the reveal submitter within the 256-block window; does not add meaningful entropy beyond the secret. See commit-reveal limitations in AUDIT_REPORT.md.
+- **Lost-secret stuck state** — If the owner loses the secret after tickets are purchased, the round cannot be drawn normally. Ticket buyers may recover funds via `claimRefund()` after `roundEnd + REFUND_GRACE_PERIOD` (7 days).
+- **Past-rounds links hardcoded to basescan** — Transaction links in the Past Rounds table always point to `basescan.org`. On local Anvil or testnets these links will 404.
+- **`roundEnd` not reset to zero on rollover** — After a no-tickets draw, `commitHash` is cleared but `roundEnd` retains its prior value, causing a cosmetic discrepancy in the UI countdown.
+- **`Ownable2Step` with direct initial ownership** — Ownership is granted to the client address at deploy time via `Ownable(_owner)`. The deployer never holds ownership. Future handoffs correctly require `acceptOwnership()`.
+- **`BURN_PERCENT` and `TICKET_PRICE` are immutable constants** — Changing lottery economics requires a contract redeployment.
+
 ## Contributing to Scaffold-ETH 2
 
 We welcome contributions to Scaffold-ETH 2!

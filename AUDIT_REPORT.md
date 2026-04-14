@@ -1,0 +1,34 @@
+# Audit Report — Cycle 1
+
+## MUST FIX
+
+- [x] **[CRITICAL]** Burn transfer to `address(0)` will revert on real CLAWD token — `packages/foundry/contracts/BurnJackpot.sol:18,105` — The contract burns via `clawd.safeTransfer(address(0), burnAmount)`. Standard OpenZeppelin ERC20 (and most production ERC20s, including the likely CLAWD deployment on Base) explicitly revert in `_update`/`_transfer` when `to == address(0)`. The `MockClawd` used in tests bypasses this check, so tests pass, but on Base mainnet every call to `draw()` with at least one ticket will revert after a burn attempt. The pot is locked: tickets keep accumulating each round, but `draw()` can never succeed, and there is no owner/emergency withdraw. Result: permanent loss of every pot ever collected. Fix: either (a) transfer burn amount to a dead address such as `0x000000000000000000000000000000000000dEaD`, (b) call `IERC20Burnable(clawd).burn(burnAmount)` if CLAWD exposes `burn`, or (c) verify on Base that CLAWD permits transfers to `address(0)` before shipping. The `BURN_ADDRESS` constant and the `MockClawd` comment indicate the team was aware of this asymmetry but shipped anyway.
+
+- [x] **[HIGH]** Owner-controlled commit-reveal allows outcome manipulation — `packages/foundry/contracts/BurnJackpot.sol:50-56,74-108` — Only the owner knows `secret`; anyone *can* call `draw(secret)` in theory, but in practice only the owner can, since the preimage never leaves the owner until a reveal tx is broadcast. Owner can: (1) observe tickets + candidate blockhashes and simulate the draw off-chain, choosing *which block* to submit the reveal in so that `keccak256(secret, blockhash(block.number-1)) % ticketCount` selects an address they control (owner is not blocked from buying tickets); (2) withhold the secret indefinitely if the simulated outcome is unfavorable, stalling payouts — there is no fallback reveal path, public `secret` release, or refund mechanism if the owner never calls `draw`. Combined with the 20% burn per round, this gives the owner a strictly positive expected value while making the "fair lottery" claim in the UI ("Prevents post-hoc owner manipulation") false. Fix options: block `buyTickets` from the owner; add a deadline after which funds are refundable to ticket buyers pro-rata if no valid draw occurred; mix in `block.prevrandao` taken *at a commit-set time the owner could not grind over* (e.g., a future-block commit) rather than at-reveal blockhash; or switch to a VRF (Chainlink / Pyth entropy on Base).
+
+- [x] **[HIGH]** Secrets in `.env` must not be committed — repo root `.env` — Ensure `.env` is gitignored and that `DEPLOYER_PRIVATE_KEY`, `ALCHEMY_API_KEY`, and any WalletConnect project ID are referenced only by name in source and never hard-coded. If the deployer key is present in plaintext in any tracked file, rotate immediately. (Values intentionally not reproduced here; see [REDACTED] guidance.)
+
+## KNOWN ISSUES
+
+- **[LOW]** Unbounded `tickets` array — deletion cost grows with entries — `packages/foundry/contracts/BurnJackpot.sol:66-68,98` — `buyTickets` pushes one entry per ticket (`n` SSTOREs per buy), and `draw` uses `delete tickets` which iterates the full array to zero each slot. At very high participation this raises a DoS risk on `draw()`. Practical mitigation: ticket price is 1M CLAWD, so natural economic bound. Still, replacing per-ticket `push` with `(buyer, count)` segments or resetting via `tickets = new address[](0)` + tracking a separate weighted index would be cheaper.
+
+- **[LOW]** Frontend references `MockClawd` contract on all chains — `packages/nextjs/app/page.tsx:60-69,117-125,131-138,233-240` — `useScaffoldReadContract({ contractName: "MockClawd", ... })` and `writeMock(...)` target MockClawd unconditionally. On Base mainnet there is no MockClawd in `deployedContracts.ts`, so balance, allowance, and approve calls will either no-op, throw at the hook level, or return `undefined`, leaving the UI stuck on "Not enough CLAWD" / "Approve" without a working action. Approval should go to the real CLAWD token ABI (`externalContracts.ts`) on Base, and the faucet button should be hidden unless `targetNetwork.id === hardhat.id`.
+
+- **[LOW]** `draw()` uses `blockhash(block.number - 1)` — `packages/foundry/contracts/BurnJackpot.sol:94` — Deterministic for the reveal submitter and within the 256-block window for observers; does not add meaningful entropy beyond the secret. See the HIGH finding above for the real concern; flagged here for completeness.
+
+- **[LOW]** `setCommit` permanently reverts if `roundEnd` already passed but nobody ever reveals — `packages/foundry/contracts/BurnJackpot.sol:50-56` — Once a commit is set, the owner cannot replace it (CommitAlreadySet) and cannot invalidate it without a successful `draw()`. If the owner loses the secret, the contract is stuck until the no-ticket rollover path clears `commitHash` — which only runs if `tickets.length == 0` *and* someone reveals a valid secret. Net effect: a lost secret with tickets bought = permanent stuck state. A `rescueRound` path gated on `roundEnd + grace` could mitigate.
+
+- **[INFO]** Past-rounds table links unconditionally to basescan — `packages/nextjs/app/page.tsx:324` — On non-Base chains (local anvil, preview deployments) the links 404. Use `targetNetwork.blockExplorers` for the base URL.
+
+- **[INFO]** `roundEnd` not reset on rollover to zero — `packages/foundry/contracts/BurnJackpot.sol:85,102` — Minor inconsistency: after a no-tickets draw, `roundEnd` is extended by 24h but `commitHash` is zeroed, so the UI's "Waiting for owner to open the next round…" branch is triggered yet the countdown still has a live `roundEnd` value. Harmless, slightly confusing.
+
+- **[INFO]** `Ownable2Step` inherited but initial ownership is set directly — `packages/foundry/contracts/BurnJackpot.sol:12,41` — `Ownable(_owner)` assigns ownership to the client (`0x7E6Db18aea6b54109f4E5F34242d4A8786E0C471`) at deploy time without the two-step acceptance dance. This is intentional and safe — the deployer (`0x7a8b288AB00F5b469D45A82D4e08198F6Eec651C`) never holds ownership — but future handoffs will correctly require `acceptOwnership`. Noted because an auditor might otherwise flag it.
+
+- **[INFO]** `BURN_PERCENT` and `TICKET_PRICE` are immutable constants — `packages/foundry/contracts/BurnJackpot.sol:15-17` — No governance knob. Acceptable for a fixed-rules lottery; mentioned so the client is aware that pivoting economics requires redeploy.
+
+- **[INFO]** Events lack a winning-ticket index — `packages/foundry/contracts/BurnJackpot.sol:30` — `RoundComplete` emits the winner address but not the chosen index, making off-chain fairness verification slightly harder. Optional.
+
+## Summary
+- Must Fix: 3 items
+- Known Issues: 8 items
+- Audit frameworks followed: contract audit (ethskills), QA audit (ethskills)
