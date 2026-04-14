@@ -27,3 +27,10 @@ dist
 packages/foundry/.env
 packages/nextjs/.env.local
 ipfs-upload.config.json
+
+# logs
+logs/
+
+# foundry local-only artifacts
+packages/foundry/broadcast/
+packages/foundry/deployments/
